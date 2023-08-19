@@ -1,6 +1,8 @@
 // Uncomment this block to pass the first stage
-use std::{net::TcpListener, io::Write};
-
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+};
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -13,7 +15,16 @@ fn main() {
             Ok(mut _stream) => {
                 println!("accepted new connection");
 
-                _stream.write(b"+PONG\r\n").unwrap();
+                let mut buf = [0; 512];
+                loop {
+                    let read_count = _stream.read(&mut buf).unwrap();
+
+                    if read_count == 0 {
+                        break;
+                    }
+
+                    _stream.write(b"+PONG\r\n").unwrap();
+                }
             }
             Err(e) => {
                 println!("error: {}", e);
