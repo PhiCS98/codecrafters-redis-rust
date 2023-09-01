@@ -1,6 +1,8 @@
-// Uncomment this block to pass the first stage
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use anyhow::Result;
+use resp::Value;
+use tokio::net::{TcpListener, TcpStream};
+
+mod resp;
 
 #[tokio::main]
 async fn main() {
@@ -11,29 +13,49 @@ async fn main() {
 
     loop {
         match listener.accept().await {
-            Ok((mut socket, _)) => {
+            Ok((socket, _)) => {
                 println!("Accepted new connection");
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; 512];
-
-                    loop {
-                        match socket.read(&mut buf).await {
-                            Ok(0) => return,
-                            Ok(_) => {
-                                if let Err(e) = socket.write_all(b"+PONG\r\n").await {
-                                    eprintln!("Failed to write to socket; err = {:?}", e);
-                                    return;
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to read from socket; err = {:?}", e);
-                                return;
-                            }
-                        }
-                    }
+                    handle_connection(socket).await;
                 });
             }
             Err(e) => println!("Error: {}", e),
         }
+    }
+}
+
+async fn handle_connection(socket: TcpStream) {
+    let mut handler = resp::RespHandler::new(socket);
+    loop {
+        let value = handler.read_value().await.unwrap();
+
+        let response = if let Some(v) = value {
+            let (command, args) = extract_command(v).unwrap();
+            match command.as_str() {
+                "ping" => Value::SimpleString("PONG".to_string()),
+                "echo" => args.first().unwrap().clone(),
+                c => panic!("Cannot handle command {}", c),
+            }
+        } else {
+            break;
+        };
+        handler.write_value(response).await.unwrap();
+    }
+}
+
+fn extract_command(value: Value) -> Result<(String, Vec<Value>)> {
+    match value {
+        Value::Array(a) => Ok((
+            unpack_bulk_string(a.first().unwrap().clone())?,
+            a.into_iter().skip(1).collect(),
+        )),
+        _ => Err(anyhow::anyhow!("Unexpected command format")),
+    }
+}
+
+fn unpack_bulk_string(value: Value) -> Result<String> {
+    match value {
+        Value::BulkString(s) => Ok(s),
+        _ => Err(anyhow::anyhow!("Expected command to be a bulk string")),
     }
 }
