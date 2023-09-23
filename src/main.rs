@@ -1,8 +1,11 @@
 use anyhow::Result;
-use resp::Value;
+use redis_server::{
+    resp::{self, Value},
+    store::RedisValueStore,
+};
 use tokio::net::{TcpListener, TcpStream};
 
-mod resp;
+mod redis_server;
 
 #[tokio::main]
 async fn main() {
@@ -26,6 +29,7 @@ async fn main() {
 
 async fn handle_connection(socket: TcpStream) {
     let mut handler = resp::RespHandler::new(socket);
+    let mut store = RedisValueStore::new();
     loop {
         let value = handler.read_value().await.unwrap();
 
@@ -34,6 +38,19 @@ async fn handle_connection(socket: TcpStream) {
             match command.as_str() {
                 "ping" => Value::SimpleString("PONG".to_string()),
                 "echo" => args.first().unwrap().clone(),
+                "set" => {
+                    let key = unpack_bulk_string(args.first().unwrap().clone()).unwrap();
+                    let value = unpack_bulk_string(args.last().unwrap().clone()).unwrap();
+                    store.set(key, value);
+                    Value::SimpleString("OK".to_string())
+                }
+                "get" => {
+                    let key = unpack_bulk_string(args.first().unwrap().clone()).unwrap();
+                    match store.get(&key) {
+                        Some(value) => Value::BulkString(value.clone()),
+                        None => Value::SimpleString("$-1\r\n".to_string()),
+                    }
+                }
                 c => panic!("Cannot handle command {}", c),
             }
         } else {
