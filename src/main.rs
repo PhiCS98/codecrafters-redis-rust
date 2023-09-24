@@ -1,9 +1,11 @@
 use anyhow::Result;
 use redis_server::{
+    resp::Value::{BulkString, Error, Null, SimpleString},
     resp::{self, Value},
     store::RedisValueStore,
 };
 use tokio::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 
 mod redis_server;
 
@@ -13,13 +15,15 @@ async fn main() {
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
+    let data_store = Arc::new(Mutex::new(RedisValueStore::new()));
 
     loop {
+        let thread_store = data_store.clone();
         match listener.accept().await {
             Ok((socket, _)) => {
                 println!("Accepted new connection");
                 tokio::spawn(async move {
-                    handle_connection(socket).await;
+                    handle_connection(socket, thread_store).await.unwrap();
                 });
             }
             Err(e) => println!("Error: {}", e),
@@ -27,9 +31,8 @@ async fn main() {
     }
 }
 
-async fn handle_connection(socket: TcpStream) {
+async fn handle_connection(socket: TcpStream, data_store: Arc<Mutex<RedisValueStore>>) -> Result<()> {
     let mut handler = resp::RespHandler::new(socket);
-    let mut store = RedisValueStore::new();
     loop {
         let value = handler.read_value().await.unwrap();
 
@@ -39,25 +42,44 @@ async fn handle_connection(socket: TcpStream) {
                 "ping" => Value::SimpleString("PONG".to_string()),
                 "echo" => args.first().unwrap().clone(),
                 "set" => {
-                    let key = unpack_bulk_string(args.first().unwrap().clone()).unwrap();
-                    let value = unpack_bulk_string(args.last().unwrap().clone()).unwrap();
-                    store.set(key, value);
-                    Value::SimpleString("OK".to_string())
-                }
-                "get" => {
-                    let key = unpack_bulk_string(args.first().unwrap().clone()).unwrap();
-                    match store.get(&key) {
-                        Some(value) => Value::BulkString(value.clone()),
-                        None => Value::SimpleString("$-1\r\n".to_string()),
+                    if let (Some(BulkString(key)), Some(BulkString(value))) =
+                        (args.get(0), args.get(1))
+                    {
+                        if let (Some(BulkString(_)), Some(BulkString(amount))) =
+                            (args.get(2), args.get(3))
+                        {
+                            data_store.lock().unwrap().set_with_expiry(
+                                key.to_string(),
+                                value.to_string(),
+                                amount.parse::<u64>().unwrap(),
+                            );
+                        } else {
+                            data_store.lock().unwrap().set(key.to_string(), value.to_string())
+                        }
+                        SimpleString("OK".to_string())
+                    } else {
+                        Error("invalid arguments".to_string())
                     }
                 }
-                c => panic!("Cannot handle command {}", c),
+                "get" => {
+                    if let Some(BulkString(key)) = args.get(0) {
+                        if let Some(value) = data_store.lock().unwrap().get(key) {
+                            SimpleString(value.to_string())
+                        } else {
+                            Null
+                        }
+                    } else {
+                        Error("Invalid arguments given".to_string())
+                    }
+                }
+                _ => Error(format!("Cannot handle command {}", command)),
             }
         } else {
             break;
         };
         handler.write_value(response).await.unwrap();
     }
+    Ok(())
 }
 
 fn extract_command(value: Value) -> Result<(String, Vec<Value>)> {

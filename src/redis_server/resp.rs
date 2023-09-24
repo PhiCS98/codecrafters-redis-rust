@@ -4,19 +4,24 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug, Eq)]
 pub enum Value {
+    Null,
     SimpleString(String),
     BulkString(String),
     Array(Vec<Value>),
+    Error(String),
 }
 
 impl Value {
     pub fn serialize(self) -> String {
         match &self {
-            Value::SimpleString(s) => format!("+{}\r\n", s),
-            Value::BulkString(s) => format!("${}\r\n{}\r\n", s.len(), s),
-            _ => panic!("Unsupported value for serialize"),
+            Value::Null => "$-1\r\n".to_string(),
+            Value::SimpleString(s) => format!("+{}\r\n", s.as_str()),
+            Value::Error(msg) => format!("-{}\r\n", msg.as_str()),
+            Value::BulkString(s) => format!("${}\r\n{}\r\n", s.chars().count(), s),
+
+            _ => panic!("Serialization not implemented for : {:?}", self),
         }
     }
 }
